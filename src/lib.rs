@@ -14,20 +14,25 @@ pub struct SignedJsonMessage {
 }
 
 #[derive(Debug, Clone)]
-pub struct SignedJsonMessageError {
-    msg: String,
+pub enum Error {
+    InvalidInputData,
+    InvalidHmacKey,
+    InvalidHmacSignature,
+    InvalidJsonData,
+    MissingNonce,
+    NonceMismatch,
 }
-impl std::error::Error for SignedJsonMessageError{}
-impl SignedJsonMessageError {
-    pub fn new(msg: &str) -> SignedJsonMessageError {
-        return SignedJsonMessageError {
-            msg: msg.to_string(),
-        };
-    }
-}
-impl fmt::Display for SignedJsonMessageError {
+impl std::error::Error for Error {}
+impl fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.msg)
+        match self {
+            Error::InvalidInputData => write!(f, "invalid input data"),
+            Error::InvalidHmacKey => write!(f, "invalid hmac key"),
+            Error::InvalidHmacSignature => write!(f, "invalid hmac signature"),
+            Error::InvalidJsonData => write!(f, "invalid json data"),
+            Error::MissingNonce => write!(f, "missing nonce "),
+            Error::NonceMismatch => write!(f, "nonce mismatch"),
+        }
     }
 }
 
@@ -57,41 +62,42 @@ impl SignedJsonMessage {
         s: &str,
         key: &str,
         expected_nonce: &str,
-    ) -> Result<SignedJsonMessage, SignedJsonMessageError> {
+    ) -> Result<SignedJsonMessage, Error> {
         let sp: Vec<&str> = s.rsplitn(2, ".").collect();
         if sp.len() != 2 {
-            return Err(SignedJsonMessageError::new(&format!(
-                "invalid input data {s}"
-            )));
+            return Err(Error::InvalidInputData);
         }
         let encoded_header_payload = sp[1];
         let encoded_signature = sp[0];
-        let recv_sig = general_purpose::STANDARD.decode(encoded_signature).unwrap();
-        let mut mac = HmacSha256::new_from_slice(key.as_bytes()).expect("invalid size");
+        let recv_sig = general_purpose::STANDARD
+            .decode(encoded_signature)
+            .map_err(|_| Error::InvalidInputData)?;
+        let mut mac =
+            HmacSha256::new_from_slice(key.as_bytes()).map_err(|_| Error::InvalidHmacKey)?;
         mac.update(encoded_header_payload.as_bytes());
-        match mac.verify_slice(&recv_sig) {
-            Ok(s) => s,
-            Err(error) => return Err(SignedJsonMessageError::new(&error.to_string())),
-        }
+        mac.verify_slice(&recv_sig)
+            .map_err(|_| Error::InvalidHmacSignature)?;
         // XXX: compare protocol version and error on mismatch
         let sp: Vec<&str> = encoded_header_payload.splitn(2, ".").collect();
         if sp.len() != 2 {
-            return Err(SignedJsonMessageError::new(&format!(
-                "invalid input header/payload {s}"
-            )));
+            return Err(Error::InvalidInputData);
         }
-        let header_bytes = general_purpose::STANDARD.decode(sp[0]).unwrap();
-        let payload_bytes = general_purpose::STANDARD.decode(sp[1]).unwrap();
-        let header: HashMap<String, String> = serde_json::from_slice(header_bytes.as_slice())
-            .map_err(|_| SignedJsonMessageError::new("cannot read header json"))?;
-        let payload: HashMap<String, String> = serde_json::from_slice(payload_bytes.as_slice())
-            .map_err(|_| SignedJsonMessageError::new("cannot read payload json"))?;
+        let header_bytes = general_purpose::STANDARD
+            .decode(sp[0])
+            .map_err(|_| Error::InvalidInputData)?;
+        let payload_bytes = general_purpose::STANDARD
+            .decode(sp[1])
+            .map_err(|_| Error::InvalidInputData)?;
+        let header: HashMap<String, String> =
+            serde_json::from_slice(header_bytes.as_slice()).map_err(|_| Error::InvalidJsonData)?;
+        let payload: HashMap<String, String> =
+            serde_json::from_slice(payload_bytes.as_slice()).map_err(|_| Error::InvalidJsonData)?;
         if expected_nonce != "" {
             let nonce = header
                 .get(&"nonce".to_string())
-                .ok_or(SignedJsonMessageError::new("cannot find nonce in header"))?;
+                .ok_or(Error::MissingNonce)?;
             if nonce != expected_nonce {
-                return Err(SignedJsonMessageError::new("invalid nonce"));
+                return Err(Error::NonceMismatch);
             }
         }
 
@@ -102,6 +108,8 @@ impl SignedJsonMessage {
 }
 
 impl fmt::Display for SignedJsonMessage {
+    // XXX: wrong approach, fmt::Result has fmt::Error which is not
+    // giving any information
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         let json_header = match serde_json::to_string(&self.header) {
             Ok(str) => str,
@@ -155,7 +163,7 @@ mod tests {
     }
 
     #[test]
-    fn signed_json_message_from_string() -> Result<(), SignedJsonMessageError> {
+    fn signed_json_message_from_string() -> Result<(), Error> {
         let msg = SignedJsonMessage::from_string("eyJhbGciOiJIUzI1NiIsIm5vbmNlIjoibm9uY2UiLCJ2ZXIiOiIxIn0=.eyJmb28iOiJiYXIifQ==.5sO1KIJIGn/ZAAwvWui9/gIHrfntLYFVnz57aMBOCCY=", "key", "nonce")?;
         assert_eq!(msg.payload().len(), 1);
         assert_eq!(
@@ -166,10 +174,41 @@ mod tests {
     }
 
     #[test]
-    fn signed_json_message_from_invalid_string() {
+    fn signed_json_message_invalid_hmac_signature() {
         let result = SignedJsonMessage::from_string("eyJhbGciOiJIUzI1NiIsIm5vbmNlIjoibm9uY2UiLCJ2ZXIiOiIxIn0=.eyJmb28iOiJiYXIifQ==.5sO1KIJIGn/ZAAwvWui9/xxxrfntLYFVnz57aMBOCCY=", "key", "nonce");
         assert_eq!(result.is_err(), true);
         let err = result.unwrap_err();
-        assert_eq!(err.to_string(), "MAC tag mismatch");
+        assert!(matches!(err, Error::InvalidHmacSignature));
+    }
+
+    #[test]
+    fn signed_json_message_invalid_string() {
+        // not enough "."
+        let result = SignedJsonMessage::from_string("invalid", "key", "nonce");
+        assert_eq!(result.is_err(), true);
+        let err = result.unwrap_err();
+        assert!(matches!(err, Error::InvalidInputData));
+
+        // invalid b64
+        let result = SignedJsonMessage::from_string("x.y.z", "key", "nonce");
+        assert_eq!(result.is_err(), true);
+        let err = result.unwrap_err();
+        assert!(matches!(err, Error::InvalidInputData));
+
+        // no valid json header (but valid sig)
+        let header_payload = format!(
+            "{}.{}",
+            general_purpose::STANDARD.encode("nojson"),
+            general_purpose::STANDARD.encode("{}")
+        );
+        let mut mac = HmacSha256::new_from_slice("key".as_bytes()).expect("invalid length");
+        mac.update(header_payload.as_bytes());
+        let sig = general_purpose::STANDARD.encode(mac.finalize().into_bytes());
+        let result =
+            SignedJsonMessage::from_string(&format!("{}.{}", header_payload, sig), "key", "nonce");
+        assert_eq!(result.is_err(), true);
+        let err = result.unwrap_err();
+        assert_eq!(err.to_string(), "invalid json data");
+        assert!(matches!(err, Error::InvalidJsonData));
     }
 }
