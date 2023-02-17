@@ -3,14 +3,14 @@ use sha2::Sha256;
 use std::collections::HashMap;
 use std::fmt;
 type HmacSha256 = Hmac<Sha256>;
-use base64::{engine::general_purpose, Engine as _};
+use base64::Engine as _;
 
-#[derive(Debug)]
-pub struct SignedJsonMessage {
-    header: HashMap<String, String>,
-    payload: HashMap<String, String>,
-
-    key: String,
+// tiny wrappers to avoid the overly verbose base64 naming
+fn b64enc<T: AsRef<[u8]>>(input: T) -> String {
+    return base64::engine::general_purpose::STANDARD.encode(input);
+}
+fn b64dec<T: AsRef<[u8]>>(input: T) -> Result<Vec<u8>, base64::DecodeError> {
+    return base64::engine::general_purpose::STANDARD.decode(input);
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +36,14 @@ impl fmt::Display for Error {
             Error::InvalidProtocolVersion => write!(f, "invalid protocol version"),
         }
     }
+}
+
+#[derive(Debug)]
+pub struct SignedJsonMessage {
+    header: HashMap<String, String>,
+    payload: HashMap<String, String>,
+
+    key: String,
 }
 
 impl SignedJsonMessage {
@@ -69,22 +77,19 @@ impl SignedJsonMessage {
         key: &str,
         expected_nonce: &str,
     ) -> Result<SignedJsonMessage, Error> {
-        let (encoded_header_payload, encoded_signature) = s.rsplit_once('.').ok_or(Error::InvalidInputData)?;
-        let recv_sig = general_purpose::STANDARD
-            .decode(encoded_signature)
-            .map_err(|_| Error::InvalidInputData)?;
+        let (encoded_header_payload, encoded_signature) =
+            s.rsplit_once('.').ok_or(Error::InvalidInputData)?;
+        let recv_sig = b64dec(encoded_signature).map_err(|_| Error::InvalidInputData)?;
         let mut mac =
             HmacSha256::new_from_slice(key.as_bytes()).map_err(|_| Error::InvalidHmacKey)?;
         mac.update(encoded_header_payload.as_bytes());
         mac.verify_slice(&recv_sig)
             .map_err(|_| Error::InvalidHmacSignature)?;
-        let (encoded_header, encoded_payload) = encoded_header_payload.split_once('.').ok_or(Error::InvalidInputData)?;
-        let header_bytes = general_purpose::STANDARD
-            .decode(&encoded_header)
-            .map_err(|_| Error::InvalidInputData)?;
-        let payload_bytes = general_purpose::STANDARD
-            .decode(&encoded_payload)
-            .map_err(|_| Error::InvalidInputData)?;
+        let (encoded_header, encoded_payload) = encoded_header_payload
+            .split_once('.')
+            .ok_or(Error::InvalidInputData)?;
+        let header_bytes = b64dec(&encoded_header).map_err(|_| Error::InvalidInputData)?;
+        let payload_bytes = b64dec(&encoded_payload).map_err(|_| Error::InvalidInputData)?;
         let header: HashMap<String, String> =
             serde_json::from_slice(header_bytes.as_slice()).map_err(|_| Error::InvalidJsonData)?;
         let nonce = header.get(&"nonce".to_string()).map_or("", String::as_ref);
@@ -106,16 +111,16 @@ impl SignedJsonMessage {
     pub fn to_string(&self) -> Result<String, Error> {
         let json_header =
             serde_json::to_string(&self.header).map_err(|_| Error::InvalidInputData)?;
-        let encoded_json_header = general_purpose::STANDARD.encode(json_header);
+        let encoded_json_header = b64enc(json_header);
         let json_payload =
             serde_json::to_string(&self.payload).map_err(|_| Error::InvalidInputData)?;
-        let encoded_json_payload = general_purpose::STANDARD.encode(json_payload);
+        let encoded_json_payload = b64enc(json_payload);
         let hp = format!("{encoded_json_header}.{encoded_json_payload}");
         let mut mac =
             HmacSha256::new_from_slice(&self.key.as_bytes()).map_err(|_| Error::InvalidHmacKey)?;
         mac.update(hp.as_bytes());
         let sig = mac.finalize();
-        let encoded_sig = general_purpose::STANDARD.encode(sig.into_bytes());
+        let encoded_sig = b64enc(sig.into_bytes());
         return Ok(format!("{hp}.{encoded_sig}"));
     }
 }
@@ -214,14 +219,10 @@ mod tests {
         assert!(matches!(err, Error::InvalidInputData));
 
         // no valid json header (but valid sig)
-        let header_payload = format!(
-            "{}.{}",
-            general_purpose::STANDARD.encode("nojson"),
-            general_purpose::STANDARD.encode("{}")
-        );
+        let header_payload = format!("{}.{}", b64enc("nojson"), b64enc("{}"));
         let mut mac = HmacSha256::new_from_slice("key".as_bytes()).expect("invalid length");
         mac.update(header_payload.as_bytes());
-        let sig = general_purpose::STANDARD.encode(mac.finalize().into_bytes());
+        let sig = b64enc(mac.finalize().into_bytes());
         let result =
             SignedJsonMessage::from_string(&format!("{}.{}", header_payload, sig), "key", "nonce");
         assert_eq!(result.is_err(), true);
