@@ -69,12 +69,7 @@ impl SignedJsonMessage {
         key: &str,
         expected_nonce: &str,
     ) -> Result<SignedJsonMessage, Error> {
-        let sp: Vec<&str> = s.rsplitn(2, ".").collect();
-        if sp.len() != 2 {
-            return Err(Error::InvalidInputData);
-        }
-        let encoded_header_payload = sp[1];
-        let encoded_signature = sp[0];
+        let (encoded_header_payload, encoded_signature) = s.rsplit_once('.').ok_or(Error::InvalidInputData)?;
         let recv_sig = general_purpose::STANDARD
             .decode(encoded_signature)
             .map_err(|_| Error::InvalidInputData)?;
@@ -83,15 +78,12 @@ impl SignedJsonMessage {
         mac.update(encoded_header_payload.as_bytes());
         mac.verify_slice(&recv_sig)
             .map_err(|_| Error::InvalidHmacSignature)?;
-        let sp: Vec<&str> = encoded_header_payload.splitn(2, ".").collect();
-        if sp.len() != 2 {
-            return Err(Error::InvalidInputData);
-        }
+        let (encoded_header, encoded_payload) = encoded_header_payload.split_once('.').ok_or(Error::InvalidInputData)?;
         let header_bytes = general_purpose::STANDARD
-            .decode(sp[0])
+            .decode(&encoded_header)
             .map_err(|_| Error::InvalidInputData)?;
         let payload_bytes = general_purpose::STANDARD
-            .decode(sp[1])
+            .decode(&encoded_payload)
             .map_err(|_| Error::InvalidInputData)?;
         let header: HashMap<String, String> =
             serde_json::from_slice(header_bytes.as_slice()).map_err(|_| Error::InvalidJsonData)?;
