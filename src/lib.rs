@@ -13,6 +13,24 @@ pub struct SignedJsonMessage {
     key: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct SignedJsonMessageError {
+    msg: String,
+}
+impl std::error::Error for SignedJsonMessageError{}
+impl SignedJsonMessageError {
+    pub fn new(msg: &str) -> SignedJsonMessageError {
+        return SignedJsonMessageError {
+            msg: msg.to_string(),
+        };
+    }
+}
+impl fmt::Display for SignedJsonMessageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.msg)
+    }
+}
+
 impl SignedJsonMessage {
     pub fn new(key: &str, nonce: &str) -> SignedJsonMessage {
         SignedJsonMessage {
@@ -39,10 +57,12 @@ impl SignedJsonMessage {
         s: &str,
         key: &str,
         expected_nonce: &str,
-    ) -> Result<SignedJsonMessage, String> {
+    ) -> Result<SignedJsonMessage, SignedJsonMessageError> {
         let sp: Vec<&str> = s.rsplitn(2, ".").collect();
         if sp.len() != 2 {
-            return Err("invalid input data {s}".to_string());
+            return Err(SignedJsonMessageError::new(&format!(
+                "invalid input data {s}"
+            )));
         }
         let encoded_header_payload = sp[1];
         let encoded_signature = sp[0];
@@ -51,26 +71,27 @@ impl SignedJsonMessage {
         mac.update(encoded_header_payload.as_bytes());
         match mac.verify_slice(&recv_sig) {
             Ok(s) => s,
-            Err(error) => return Err(error.to_string()),
+            Err(error) => return Err(SignedJsonMessageError::new(&error.to_string())),
         }
         // XXX: compare protocol version and error on mismatch
         let sp: Vec<&str> = encoded_header_payload.splitn(2, ".").collect();
         if sp.len() != 2 {
-            return Err("invalid input header/payload {s}".to_string());
+            return Err(SignedJsonMessageError::new(&format!(
+                "invalid input header/payload {s}"
+            )));
         }
         let header_bytes = general_purpose::STANDARD.decode(sp[0]).unwrap();
         let payload_bytes = general_purpose::STANDARD.decode(sp[1]).unwrap();
-        let header: HashMap<String, String> =
-            serde_json::from_slice(header_bytes.as_slice()).expect("cannot read header json");
-        let payload: HashMap<String, String> =
-            serde_json::from_slice(payload_bytes.as_slice()).expect("cannot read payload json");
+        let header: HashMap<String, String> = serde_json::from_slice(header_bytes.as_slice())
+            .map_err(|_| SignedJsonMessageError::new("cannot read header json"))?;
+        let payload: HashMap<String, String> = serde_json::from_slice(payload_bytes.as_slice())
+            .map_err(|_| SignedJsonMessageError::new("cannot read payload json"))?;
         if expected_nonce != "" {
-            let nonce_item = header
+            let nonce = header
                 .get(&"nonce".to_string())
-                .ok_or("cannot find nonce in header");
-            let nonce = nonce_item.unwrap();
+                .ok_or(SignedJsonMessageError::new("cannot find nonce in header"))?;
             if nonce != expected_nonce {
-                return Err("invalid nonce".to_string());
+                return Err(SignedJsonMessageError::new("invalid nonce"));
             }
         }
 
@@ -134,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn signed_json_message_from_string() -> Result<(), String> {
+    fn signed_json_message_from_string() -> Result<(), SignedJsonMessageError> {
         let msg = SignedJsonMessage::from_string("eyJhbGciOiJIUzI1NiIsIm5vbmNlIjoibm9uY2UiLCJ2ZXIiOiIxIn0=.eyJmb28iOiJiYXIifQ==.5sO1KIJIGn/ZAAwvWui9/gIHrfntLYFVnz57aMBOCCY=", "key", "nonce")?;
         assert_eq!(msg.payload().len(), 1);
         assert_eq!(
@@ -149,6 +170,6 @@ mod tests {
         let result = SignedJsonMessage::from_string("eyJhbGciOiJIUzI1NiIsIm5vbmNlIjoibm9uY2UiLCJ2ZXIiOiIxIn0=.eyJmb28iOiJiYXIifQ==.5sO1KIJIGn/ZAAwvWui9/xxxrfntLYFVnz57aMBOCCY=", "key", "nonce");
         assert_eq!(result.is_err(), true);
         let err = result.unwrap_err();
-        assert_eq!(err, "MAC tag mismatch".to_string());
+        assert_eq!(err.to_string(), "MAC tag mismatch");
     }
 }
