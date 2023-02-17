@@ -21,6 +21,7 @@ pub enum Error {
     InvalidJsonData,
     MissingNonce,
     NonceMismatch,
+    InvalidProtocolVersion,
 }
 impl std::error::Error for Error {}
 impl fmt::Display for Error {
@@ -32,6 +33,7 @@ impl fmt::Display for Error {
             Error::InvalidJsonData => write!(f, "invalid json data"),
             Error::MissingNonce => write!(f, "missing nonce "),
             Error::NonceMismatch => write!(f, "nonce mismatch"),
+            Error::InvalidProtocolVersion => write!(f, "invalid protocol version"),
         }
     }
 }
@@ -49,15 +51,19 @@ impl SignedJsonMessage {
             payload: HashMap::new(),
         }
     }
+
     pub fn set_payload(&mut self, payload: HashMap<String, String>) {
         self.payload = payload;
     }
+
     pub fn payload(&self) -> &HashMap<String, String> {
         return &self.payload;
     }
+
     pub fn nonce(&self) -> Option<&String> {
         return self.header.get("nonce");
     }
+
     pub fn from_string(
         s: &str,
         key: &str,
@@ -77,7 +83,6 @@ impl SignedJsonMessage {
         mac.update(encoded_header_payload.as_bytes());
         mac.verify_slice(&recv_sig)
             .map_err(|_| Error::InvalidHmacSignature)?;
-        // XXX: compare protocol version and error on mismatch
         let sp: Vec<&str> = encoded_header_payload.splitn(2, ".").collect();
         if sp.len() != 2 {
             return Err(Error::InvalidInputData);
@@ -90,45 +95,36 @@ impl SignedJsonMessage {
             .map_err(|_| Error::InvalidInputData)?;
         let header: HashMap<String, String> =
             serde_json::from_slice(header_bytes.as_slice()).map_err(|_| Error::InvalidJsonData)?;
+        let nonce = header.get(&"nonce".to_string()).map_or("", String::as_ref);
+        if expected_nonce != "" && expected_nonce != nonce {
+            return Err(Error::NonceMismatch);
+        }
+        let ver = header.get(&"ver".to_string()).map_or("", String::as_ref);
+        if ver != "1" {
+            return Err(Error::InvalidProtocolVersion);
+        }
+        // only decode the payload after everything is validated
         let payload: HashMap<String, String> =
             serde_json::from_slice(payload_bytes.as_slice()).map_err(|_| Error::InvalidJsonData)?;
-        if expected_nonce != "" {
-            let nonce = header
-                .get(&"nonce".to_string())
-                .ok_or(Error::MissingNonce)?;
-            if nonce != expected_nonce {
-                return Err(Error::NonceMismatch);
-            }
-        }
-
-        let mut msg = SignedJsonMessage::new(key, expected_nonce);
+        let mut msg = SignedJsonMessage::new(key, nonce);
         msg.set_payload(payload);
         Ok(msg)
     }
-}
 
-impl fmt::Display for SignedJsonMessage {
-    // XXX: wrong approach, fmt::Result has fmt::Error which is not
-    // giving any information
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        let json_header = match serde_json::to_string(&self.header) {
-            Ok(str) => str,
-            Err(error) => error.to_string(),
-        };
+    pub fn to_string(&self) -> Result<String, Error> {
+        let json_header =
+            serde_json::to_string(&self.header).map_err(|_| Error::InvalidInputData)?;
         let encoded_json_header = general_purpose::STANDARD.encode(json_header);
-        let json_payload = match serde_json::to_string(&self.payload) {
-            Ok(str) => str,
-            Err(error) => error.to_string(),
-        };
+        let json_payload =
+            serde_json::to_string(&self.payload).map_err(|_| Error::InvalidInputData)?;
         let encoded_json_payload = general_purpose::STANDARD.encode(json_payload);
         let hp = format!("{encoded_json_header}.{encoded_json_payload}");
-        // XXX: can this expect be avoided?
-        let mut mac = HmacSha256::new_from_slice(&self.key.as_bytes()).expect("invalid length");
+        let mut mac =
+            HmacSha256::new_from_slice(&self.key.as_bytes()).map_err(|_| Error::InvalidHmacKey)?;
         mac.update(hp.as_bytes());
         let sig = mac.finalize();
         let encoded_sig = general_purpose::STANDARD.encode(sig.into_bytes());
-        fmt.write_str(&format!("{hp}.{encoded_sig}"))?;
-        Ok(())
+        return Ok(format!("{hp}.{encoded_sig}"));
     }
 }
 
@@ -155,11 +151,41 @@ mod tests {
     }
 
     #[test]
-    fn signed_json_message_to_str() {
+    fn signed_json_message_new() -> Result<(), Error> {
+        // create a signed message and encode as string
         let mut msg = SignedJsonMessage::new("key", "nonce");
         msg.set_payload(HashMap::from([("foo".to_string(), "bar".to_string())]));
-        // TODO: test!
-        println!("xxx {msg}");
+        let s = msg.to_string()?;
+        // XXX: test more
+        assert_eq!(s.matches(".").count(), 2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn signed_json_message_integration() -> Result<(), Error> {
+        // create a signed message and encode as string
+        let mut msg = SignedJsonMessage::new("key", "nonce");
+        msg.set_payload(HashMap::from([("foo".to_string(), "bar".to_string())]));
+        let s = msg.to_string()?;
+
+        // read back with invalid key
+        let res = SignedJsonMessage::from_string(&s, "invalid-key", "nonce");
+        assert!(res.is_err());
+        let err = res.unwrap_err();
+        assert!(matches!(err, Error::InvalidHmacSignature));
+
+        // read back with invalid nonce
+        let res = SignedJsonMessage::from_string(&s, "key", "invalid-nonce");
+        assert!(res.is_err());
+        let err = res.unwrap_err();
+        assert!(matches!(err, Error::NonceMismatch));
+
+        // read back, no nonce expected
+        let msg2 = SignedJsonMessage::from_string(&s, "key", "")?;
+        assert_eq!(msg2.nonce().expect("nonce missing"), "nonce");
+
+        Ok(())
     }
 
     #[test]
