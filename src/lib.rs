@@ -43,6 +43,7 @@ pub struct SignedJsonMessage {
     header: HashMap<String, String>,
     payload: HashMap<String, String>,
 
+    // TODO: key must become something like "Vec<u8>" instead
     key: String,
 }
 
