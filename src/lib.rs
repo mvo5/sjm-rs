@@ -40,9 +40,11 @@ impl fmt::Display for Error {
 
 #[derive(Debug)]
 pub struct SignedJsonMessage {
-    header: HashMap<String, String>,
-    payload: HashMap<String, String>,
+    // XXX: is this the best way make payload public? setter/getter did not work really well
+    /// The payload is application specific data that is part of the SJM
+    pub payload: HashMap<String, String>,
 
+    header: HashMap<String, String>,
     // TODO: key must become something like "Vec<u8>" instead
     key: String,
 }
@@ -59,14 +61,6 @@ impl SignedJsonMessage {
             ]),
             payload: HashMap::new(),
         }
-    }
-
-    pub fn set_payload(&mut self, payload: HashMap<String, String>) {
-        self.payload = payload;
-    }
-
-    pub fn payload(&self) -> &HashMap<String, String> {
-        return &self.payload;
     }
 
     pub fn nonce(&self) -> Option<&String> {
@@ -105,7 +99,7 @@ impl SignedJsonMessage {
         let payload: HashMap<String, String> =
             serde_json::from_slice(payload_bytes.as_slice()).map_err(|_| Error::InvalidJsonData)?;
         let mut msg = SignedJsonMessage::new(key, nonce);
-        msg.set_payload(payload);
+        msg.payload = payload;
         Ok(msg)
     }
 
@@ -138,12 +132,12 @@ mod tests {
     }
 
     #[test]
-    fn signed_json_message_set_payload() {
+    fn signed_json_message_payload() {
         let mut msg = SignedJsonMessage::new("key", "nonce");
-        msg.set_payload(HashMap::from([("foo".to_string(), "bar".to_string())]));
-        assert_eq!(msg.payload().len(), 1);
+        msg.payload = HashMap::from([("foo".to_string(), "bar".to_string())]);
+        assert_eq!(msg.payload.len(), 1);
         assert_eq!(
-            msg.payload().get(&"foo".to_string()),
+            msg.payload.get(&"foo".to_string()),
             Some(&"bar".to_string())
         );
     }
@@ -152,7 +146,7 @@ mod tests {
     fn signed_json_message_new() -> Result<(), Error> {
         // create a signed message and encode as string
         let mut msg = SignedJsonMessage::new("key", "nonce");
-        msg.set_payload(HashMap::from([("foo".to_string(), "bar".to_string())]));
+        msg.payload = HashMap::from([("foo".to_string(), "bar".to_string())]);
         let s = msg.to_string()?;
         // XXX: test more
         assert_eq!(s.matches(".").count(), 2);
@@ -164,7 +158,7 @@ mod tests {
     fn signed_json_message_integration() -> Result<(), Error> {
         // create a signed message and encode as string
         let mut msg = SignedJsonMessage::new("key", "nonce");
-        msg.set_payload(HashMap::from([("foo".to_string(), "bar".to_string())]));
+        msg.payload = HashMap::from([("foo".to_string(), "bar".to_string())]);
         let s = msg.to_string()?;
 
         // read back with invalid key
@@ -189,9 +183,9 @@ mod tests {
     #[test]
     fn signed_json_message_from_string() -> Result<(), Error> {
         let msg = SignedJsonMessage::from_string("eyJhbGciOiJIUzI1NiIsIm5vbmNlIjoibm9uY2UiLCJ2ZXIiOiIxIn0=.eyJmb28iOiJiYXIifQ==.5sO1KIJIGn/ZAAwvWui9/gIHrfntLYFVnz57aMBOCCY=", "key", "nonce")?;
-        assert_eq!(msg.payload().len(), 1);
+        assert_eq!(msg.payload.len(), 1);
         assert_eq!(
-            msg.payload().get(&"foo".to_string()),
+            msg.payload.get(&"foo".to_string()),
             Some(&"bar".to_string())
         );
         Ok(())
