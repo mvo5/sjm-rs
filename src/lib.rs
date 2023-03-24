@@ -7,10 +7,10 @@ use base64::Engine as _;
 
 // tiny wrappers to avoid the overly verbose base64 naming
 fn b64enc<T: AsRef<[u8]>>(input: T) -> String {
-    return base64::engine::general_purpose::STANDARD.encode(input);
+    base64::engine::general_purpose::STANDARD.encode(input)
 }
 fn b64dec<T: AsRef<[u8]>>(input: T) -> Result<Vec<u8>, base64::DecodeError> {
-    return base64::engine::general_purpose::STANDARD.decode(input);
+    base64::engine::general_purpose::STANDARD.decode(input)
 }
 
 #[derive(Debug, Clone)]
@@ -64,7 +64,7 @@ impl SignedJsonMessage {
     }
 
     pub fn nonce(&self) -> Option<&String> {
-        return self.header.get("nonce");
+        self.header.get("nonce")
     }
 
     pub fn from_string(
@@ -83,12 +83,12 @@ impl SignedJsonMessage {
         let (encoded_header, encoded_payload) = encoded_header_payload
             .split_once('.')
             .ok_or(Error::InvalidInputData)?;
-        let header_bytes = b64dec(&encoded_header).map_err(|_| Error::InvalidInputData)?;
-        let payload_bytes = b64dec(&encoded_payload).map_err(|_| Error::InvalidInputData)?;
+        let header_bytes = b64dec(encoded_header).map_err(|_| Error::InvalidInputData)?;
+        let payload_bytes = b64dec(encoded_payload).map_err(|_| Error::InvalidInputData)?;
         let header: HashMap<String, String> =
             serde_json::from_slice(header_bytes.as_slice()).map_err(|_| Error::InvalidJsonData)?;
         let nonce = header.get(&"nonce".to_string()).map_or("", String::as_ref);
-        if expected_nonce != "" && expected_nonce != nonce {
+        if !expected_nonce.is_empty() && expected_nonce != nonce {
             return Err(Error::NonceMismatch);
         }
         let ver = header.get(&"ver".to_string()).map_or("", String::as_ref);
@@ -112,11 +112,12 @@ impl SignedJsonMessage {
         let encoded_json_payload = b64enc(json_payload);
         let hp = format!("{encoded_json_header}.{encoded_json_payload}");
         let mut mac =
-            HmacSha256::new_from_slice(&self.key.as_bytes()).map_err(|_| Error::InvalidHmacKey)?;
+            HmacSha256::new_from_slice(self.key.as_bytes()).map_err(|_| Error::InvalidHmacKey)?;
         mac.update(hp.as_bytes());
         let sig = mac.finalize();
         let encoded_sig = b64enc(sig.into_bytes());
-        return Ok(format!("{hp}.{encoded_sig}"));
+
+        Ok(format!("{hp}.{encoded_sig}"))
     }
 }
 
